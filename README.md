@@ -1,5 +1,3 @@
-#CORN
-
 from utils import *
 import pickle
 import numpy as np
@@ -428,6 +426,7 @@ class DataModel():
             else:
                 label_num = 0
             static_len = static_data.shape[-1]
+            print(self.latest_records.keys())
             for user, records in groupby(dynamic_data, lambda x: x[0]):
                 records = np.asarray(sorted(list(records), key=lambda x: x[1]))
                 if len(records) < 1:
@@ -438,9 +437,12 @@ class DataModel():
                     self.latest_records[user] = new_record[start:, ]
                 for i in range(0, len(records)):
                     seq = records[max(0, i - self.seq_len + 1):i + 1, start_index:]
+                    print('1: ' + str(seq.shape))
+                    print(user)
                     if user in self.latest_records:
-                        lenth = self.seq_len - len(seq)
+                        lenth = self.seq_len - seq.shape[0]
                         seq = np.concatenate([self.latest_records[user][-lenth:,start_index:], seq], axis=0)
+                        print('2: ' + str(seq.shape))
                     if len(seq) < self.seq_len:
                         seq = np.pad(seq, ((0, self.seq_len - seq.shape[0]), (0, 0)), 'constant', constant_values=(0, 0))
                     dynamic_records.append(seq)
@@ -485,7 +487,8 @@ class DataModel():
                      'num_dyn_index': self.num_dyn_index,
                      'num_sta_index': self.num_sta_index,
                      'latest_records': latest_records,
-                     'label_value_dict': self.label_value_dict},
+                     'label_value_dict': self.label_value_dict,
+                     'label_name_dict': self.label_name_dict},
                     open(dump_file + '.interp', "wb"))
         return results, dump_file + '.interp'
 
@@ -507,6 +510,7 @@ class DataModel():
             self.num_sta_index = interp_dict['num_sta_index']
             self.label_value_dict = interp_dict['label_value_dict']
             self.label_name_dict = interp_dict['label_name_dict']
+            self.latest_records = interp_dict['latest_records']
             return pickle.load(open(data_file, "rb")), dump_file + '.interp'
         self._read_file()
         self._data_clean()
