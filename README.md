@@ -36,13 +36,11 @@ class DataModel():
         else:
             self.date_flag = False
 
-        self.userid_flag = True
-        if 'user_id' in key_column_name:
-            self.user_id_indicator = key_column_name['user_id']
-            assert isinstance(self.user_id_indicator, str), print(
-                "Type error, 'user_id' should be assigned a string to indicate the user id column")
-        else:
-            self.userid_flag = False
+        assert 'user_id' in key_column_name, print(
+            "Key missing, 'user_id' should be assigned a value to indicate the user id column")
+        self.user_id_indicator = key_column_name['user_id']
+        assert isinstance(self.user_id_indicator, str), print(
+            "Type error, 'user_id' should be assigned a string to indicate the user id column")
 
         self.normalization_method = 'uniform'
         self.threhold_user = None
@@ -127,7 +125,7 @@ class DataModel():
             except Exception:
                 print('The program cannot solve the file type of {}'.format(self.path.split()[-1]))
         data = data.head(1000)
-        
+
         columns_index = data.columns.values.tolist()
 
         numerical_data = list()
@@ -163,16 +161,14 @@ class DataModel():
             self.label_name_dict = []
             self.label_value_dict = []
 
-        if self.userid_flag:
-            if self.user_id_indicator not in columns_index:
-                try:
-                    raise Exception('Keys not found!')
-                except Exception:
-                    print("user ids indicator '{}' is not in the data head list".format(self.label_indicator))
-            user_ids = data.loc[:, self.user_id_indicator].apply(hash).get_values()
-            data = data.drop(self.user_id_indicator, axis=1)
-        else:
-            user_ids = np.asarray(range(len(data)))
+        if self.user_id_indicator not in columns_index:
+            try:
+                raise Exception('Keys not found!')
+            except Exception:
+                print("user ids indicator '{}' is not in the data head list".format(self.label_indicator))
+        user_ids = data.loc[:, self.user_id_indicator].get_values()
+        user_ids, user_id_tokenizer, _ = tokenize_categorical_values(user_ids)
+        data = data.drop(self.user_id_indicator, axis=1)
         categorical_data.append(user_ids)
         numerical_data.append(user_ids)
 
@@ -218,6 +214,7 @@ class DataModel():
         self.numerical_data = numerical_data
         self.categorical_data = categorical_data
         self.name_index = name_index
+        self.user_id_tokenizer = user_id_tokenizer
 
     @dec_timer
     def _data_clean(self):
@@ -282,7 +279,7 @@ class DataModel():
             self.cat_dyn_index = []
             self.num_dyn_index = []
 
-    def append_data(self, file_path, reset=False):
+    def append_data(self, file_path, extended=False):
         dump_file = self.generate_dump_file()
         latest_records = self.latest_records
 
@@ -309,11 +306,7 @@ class DataModel():
             labels = list()
             for label_name in self.label_indicator:
                 columns = data.loc[:, label_name].get_values()
-                unique_c = np.unique(columns)
                 value_dict = self.label_value_dict[label_name]
-                for v in unique_c:
-                    if v not in value_dict:
-                        value_dict[v] = len(value_dict)
                 columns = [value_dict[v] for v in columns]
                 labels.append(columns)
             data = data.drop(self.label_indicator, axis=1)
@@ -322,16 +315,18 @@ class DataModel():
         else:
             self.labels = []
 
-        if self.userid_flag:
-            if self.user_id_indicator not in columns_index:
-                try:
-                    raise Exception('Keys not found!')
-                except Exception:
-                    print("user ids indicator '{}' is not in the data head list".format(self.label_indicator))
-            user_ids = data.loc[:, self.user_id_indicator].apply(hash).get_values()
-            data = data.drop(self.user_id_indicator, axis=1)
-        else:
-            user_ids = np.asarray(range(len(data)))
+        if self.user_id_indicator not in columns_index:
+            try:
+                raise Exception('Keys not found!')
+            except Exception:
+                print("user ids indicator '{}' is not in the data head list".format(self.label_indicator))
+        user_ids = data.loc[:, self.user_id_indicator].get_values()
+        uniq_user_ids = np.unique(user_ids)
+        for u in uniq_user_ids:
+            if u not in self.user_id_tokenizer:
+                self.user_id_tokenizer[u] = len(self.user_id_tokenizer)
+        user_ids, _, _ = tokenize_categorical_values(user_ids, self.user_id_tokenizer)
+        data = data.drop(self.user_id_indicator, axis=1)
         categorical_data.append(user_ids)
         numerical_data.append(user_ids)
 
@@ -369,11 +364,12 @@ class DataModel():
         i = 0
         generated_data = list()
         for attri in categorical_data[start_index:]:
-            uni_a = np.unique(attri)
-            for va in uni_a:
-                if va not in self.tokenizer_list[i]:
-                    self.tokenizer_list[i][va] = len(self.tokenizer_list[i])
-                    self.reverse_tokenizer_dict[self.name_index['categorical'][i]][len(self.tokenizer_list[i])] = va
+            if extended:
+                uni_a = np.unique(attri)
+                for va in uni_a:
+                    if va not in self.tokenizer_list[i]:
+                        self.tokenizer_list[i][va] = len(self.tokenizer_list[i])
+                        self.reverse_tokenizer_dict[self.name_index['categorical'][i]][len(self.tokenizer_list[i])] = va
             tokenized_data, _, _ = tokenize_categorical_values(attri, self.tokenizer_list[i])
             generated_data.append(np.asarray(tokenized_data))
             i += 1
@@ -390,15 +386,18 @@ class DataModel():
 
         if self.normalization_method == 'standard':
             normalized_numerical_data, self.normalization_a, self.normalization_b = stand_normalization(
-                np.asarray(numerical_data[:, start_index:], dtype=np.float), means=self.normalization_a, stds=self.normalization_b,
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), means=self.normalization_a,
+                stds=self.normalization_b,
                 axis=0)
         elif self.normalization_method == 'uniform':
             normalized_numerical_data, self.normalization_a, self.normalization_b = uniform_normalization(
-                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a, mins=self.normalization_b,
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a,
+                mins=self.normalization_b,
                 axis=0)
         else:
             normalized_numerical_data, self.normalization_a, self.normalization_b = uniform_normalization(
-                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a, mins=self.normalization_b,
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a,
+                mins=self.normalization_b,
                 axis=0)
         normalized_numerical_data = np.asarray(normalized_numerical_data, np.float)
         normalized_numerical_data[np.isnan(normalized_numerical_data)] = 0.0
@@ -418,11 +417,12 @@ class DataModel():
             static_data = np.concatenate([categorical_data[:, 0:start_index],
                                           categorical_data[:, start_index:][:, self.cat_sta_index],
                                           numerical_data[:, start_index:][:, self.num_sta_index],
-                                          labels], axis=1)
+                                          self.labels], axis=1)
             statics_group = dict(
-                [(user, np.asarray(sorted(list(records), key=lambda x: x[1]))) for user, records in groupby(static_data, lambda x: x[0])])
+                [(user, np.asarray(sorted(list(records), key=lambda x: x[1]))) for user, records in
+                 groupby(static_data, lambda x: x[0])])
             if self.label_flag:
-                label_num = labels.shape[-1]
+                label_num = self.labels.shape[-1]
             else:
                 label_num = 0
             static_len = static_data.shape[-1]
@@ -441,16 +441,16 @@ class DataModel():
                     print(user)
                     if user in self.latest_records:
                         lenth = self.seq_len - seq.shape[0]
-                        seq = np.concatenate([self.latest_records[user][-lenth:,start_index:], seq], axis=0)
+                        seq = np.concatenate([self.latest_records[user][-lenth:, start_index:], seq], axis=0)
                         print('2: ' + str(seq.shape))
                     if len(seq) < self.seq_len:
-                        seq = np.pad(seq, ((0, self.seq_len - seq.shape[0]), (0, 0)), 'constant', constant_values=(0, 0))
+                        seq = np.pad(seq, ((0, self.seq_len - seq.shape[0]), (0, 0)), 'constant',
+                                     constant_values=(0, 0))
                     dynamic_records.append(seq)
                     static_records.append(statics_group[user][i][start_index:static_len - label_num])
                     new_labels.append(statics_group[user][i][static_len - label_num:])
-                    
+
             dynamics = np.stack(dynamic_records, axis=0)
-            print(dynamics.shape)
             statics = np.stack(static_records, axis=0)
             results['static_categorical_data'] = statics[:, :cat_statics_length]
             results['static_numerical_data'] = statics[:, cat_statics_length:]
@@ -488,13 +488,196 @@ class DataModel():
                      'num_sta_index': self.num_sta_index,
                      'latest_records': latest_records,
                      'label_value_dict': self.label_value_dict,
-                     'label_name_dict': self.label_name_dict},
+                     'label_name_dict': self.label_name_dict,
+                     'user_id_tokenizer': self.user_id_tokenizer},
                     open(dump_file + '.interp', "wb"))
         return results, dump_file + '.interp'
 
-    def process_data(self):
+    def processing(self, file_path):
+        if file_path.endswith('.csv'):
+            data = pd.read_csv(file_path)
+        else:
+            try:
+                raise Exception('File type wrong')
+            except Exception:
+                print('The program cannot solve the file type of {}'.format(file_path.split('.')[-1]))
+        data = data.head(100)
+        columns_index = data.columns.values.tolist()
+
+        numerical_data = list()
+        categorical_data = list()
+
+        if self.label_flag:
+            for label_name in self.label_indicator:
+                if label_name not in columns_index:
+                    try:
+                        raise Exception('Keys not found!')
+                    except Exception:
+                        print("label indicator '{}' is not in the data head list".format(self.label_indicator))
+            labels = list()
+            for label_name in self.label_indicator:
+                columns = data.loc[:, label_name].get_values()
+                value_dict = self.label_value_dict[label_name]
+                columns = [value_dict[v] for v in columns]
+                labels.append(columns)
+            data = data.drop(self.label_indicator, axis=1)
+            labels = np.stack(labels, axis=1)
+            self.labels = labels
+        else:
+            self.labels = []
+
+        if self.user_id_indicator not in columns_index:
+            try:
+                raise Exception('Keys not found!')
+            except Exception:
+                print("user ids indicator '{}' is not in the data head list".format(self.label_indicator))
+        user_ids = data.loc[:, self.user_id_indicator].get_values()
+        uniq_user_ids = np.unique(user_ids)
+        for u in uniq_user_ids:
+            if u not in self.user_id_tokenizer:
+                self.user_id_tokenizer[u] = len(self.user_id_tokenizer)
+        user_ids, _, _ = tokenize_categorical_values(user_ids, self.user_id_tokenizer)
+        data = data.drop(self.user_id_indicator, axis=1)
+        categorical_data.append(user_ids)
+        numerical_data.append(user_ids)
+
+        if self.date_flag:
+            if self.date_indicator not in columns_index:
+                try:
+                    raise Exception('Keys not found!')
+                except Exception:
+                    print("indicator for date '{}' is not in the data head list".format(self.date_indicator))
+            try:
+                date_column = (pd.to_datetime(data.loc[:, self.date_indicator]).get_values() - np.datetime64(
+                    '1970-01-01T00:00:00')) / np.timedelta64(1, 's')
+                data = data.drop(self.date_indicator, axis=1)
+                categorical_data.append(date_column)
+                numerical_data.append(date_column)
+            except Exception:
+                print("column named '{}' is not in date type".format(self.date_indicator))
+
+        columns_index = data.columns.values.tolist()
+        for i in range(len(columns_index)):
+            if columns_index[i] in self.name_index['categorical']:
+                categorical_data.append(data.iloc[:, i].get_values().astype('str'))
+            elif columns_index[i] in self.name_index['numerical']:
+                numerical_data.append(np.asarray(data.iloc[:, i].get_values()))
+            else:
+                try:
+                    raise Exception('New features found!')
+                except Exception:
+                    print("Feature named {} is not included in previous data".format(columns_index[i]))
+        numerical_data = np.stack(numerical_data, axis=1)
+        if self.date_flag:
+            start_index = 2
+        else:
+            start_index = 1
+        i = 0
+        generated_data = list()
+        for attri in categorical_data[start_index:]:
+            tokenized_data, _, _ = tokenize_categorical_values(attri, self.tokenizer_list[i])
+            generated_data.append(np.asarray(tokenized_data))
+            i += 1
+        categorical_data_tokenized = np.stack(generated_data, axis=1)
+        if self.date_flag:
+            categorical_data = np.concatenate(
+                [np.reshape(np.asarray(categorical_data[0]), newshape=(len(categorical_data[0]), 1)),
+                 np.reshape(np.asarray(categorical_data[1]), newshape=(len(categorical_data[1]), 1)),
+                 categorical_data_tokenized], axis=1)
+        else:
+            categorical_data = np.concatenate(
+                [np.reshape(np.asarray(categorical_data[0]), newshape=(len(categorical_data[0]), 1)),
+                 categorical_data_tokenized], axis=1)
+
+        if self.normalization_method == 'standard':
+            normalized_numerical_data, self.normalization_a, self.normalization_b = stand_normalization(
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), means=self.normalization_a,
+                stds=self.normalization_b,
+                axis=0)
+        elif self.normalization_method == 'uniform':
+            normalized_numerical_data, self.normalization_a, self.normalization_b = uniform_normalization(
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a,
+                mins=self.normalization_b,
+                axis=0)
+        else:
+            normalized_numerical_data, self.normalization_a, self.normalization_b = uniform_normalization(
+                np.asarray(numerical_data[:, start_index:], dtype=np.float), maxs=self.normalization_a,
+                mins=self.normalization_b,
+                axis=0)
+        normalized_numerical_data = np.asarray(normalized_numerical_data, np.float)
+        normalized_numerical_data[np.isnan(normalized_numerical_data)] = 0.0
+        numerical_data[:, start_index:] = normalized_numerical_data
+
+        cat_dynamics_length = int(np.sum(self.cat_dyn_index))
+        cat_statics_length = int(np.sum(self.cat_sta_index))
+        static_records = []
+        new_labels = []
+        results = dict()
+        results['seq_len'] = self.seq_len
+        if self.date_flag:
+            dynamic_records = []
+            dynamic_data = np.concatenate([categorical_data[:, 0:start_index],
+                                           categorical_data[:, start_index:][:, self.cat_dyn_index],
+                                           numerical_data[:, start_index:][:, self.num_dyn_index]], axis=1)
+            static_data = np.concatenate([categorical_data[:, 0:start_index],
+                                          categorical_data[:, start_index:][:, self.cat_sta_index],
+                                          numerical_data[:, start_index:][:, self.num_sta_index],
+                                          self.labels], axis=1)
+            statics_group = dict(
+                [(user, np.asarray(sorted(list(records), key=lambda x: x[1]))) for user, records in
+                 groupby(static_data, lambda x: x[0])])
+            if self.label_flag:
+                label_num = self.labels.shape[-1]
+            else:
+                label_num = 0
+            static_len = static_data.shape[-1]
+            for user, records in groupby(dynamic_data, lambda x: x[0]):
+                records = np.asarray(sorted(list(records), key=lambda x: x[1]))
+                if len(records) < 1:
+                    continue                
+                for i in range(0, max(1, len(records) - self.seq_len + 1)):
+                    seq = records[i:min(len(records), i + self.seq_len), start_index:]
+                    if len(records) < self.seq_len:
+                        seq = np.pad(seq, ((0, self.seq_len - seq.shape[0]), (0, 0)), 'constant',
+                                     constant_values=(0, 0))
+                    dynamic_records.append(seq)
+                    static_records.append(
+                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][
+                        start_index:static_len - label_num])
+                    new_labels.append(
+                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][
+                        static_len - label_num:])
+
+            dynamics = np.stack(dynamic_records, axis=0)
+            statics = np.stack(static_records, axis=0)
+            results['static_categorical_data'] = statics[:, :cat_statics_length]
+            results['static_numerical_data'] = statics[:, cat_statics_length:]
+            results['dynamic_categorical_data'] = dynamics[:, :, :cat_dynamics_length].transpose([2, 0, 1])
+            results['dynamic_numerical_data'] = dynamics[:, :, cat_dynamics_length:]
+            results['dynamic_categorical_token'] = get_columns(self.tokenizer_list, self.cat_dyn_index)
+            results['static_categorical_token'] = get_columns(self.tokenizer_list, self.cat_sta_index)
+        else:
+            results['static_categorical_data'] = self.categorical_data[:, start_index:][:, self.cat_sta_index]
+            results['static_numerical_data'] = self.numerical_data[:, start_index:][:, self.num_sta_index]
+            results['static_categorical_token'] = self.tokenizer_list
+            results['dynamic_numerical_data'] = []
+            results['dynamic_categorical_data'] = np.asarray([[[]]])
+            results['dynamic_numerical_data'] = np.asarray([[[]]])
+
+        if self.label_flag:
+            if not self.date_flag:
+                results['labels'] = np.asarray(self.labels)
+            else:
+                results['labels'] = np.asarray(new_labels)
+            results['label_name_dict'] = self.label_name_dict
+        else:
+            results['labels'] = []
+            results['label_name_dict'] = []
+        return results
+
+    def process_data(self, reset=False):
         dump_file = self.generate_dump_file()
-        if os.path.exists(dump_file + '.training'):
+        if os.path.exists(dump_file + '.training') and not reset:
             data_file = dump_file + '.training'
             interpretation_file = dump_file + '.interp'
             interp_dict = pickle.load(open(interpretation_file, "rb"))
@@ -511,11 +694,12 @@ class DataModel():
             self.label_value_dict = interp_dict['label_value_dict']
             self.label_name_dict = interp_dict['label_name_dict']
             self.latest_records = interp_dict['latest_records']
+            self.user_id_tokenizer = interp_dict['user_id_tokenizer']
             return pickle.load(open(data_file, "rb")), dump_file + '.interp'
         self._read_file()
         self._data_clean()
-        cat_dynamics_length = int (np.sum(self.cat_dyn_index))
-        cat_statics_length = int (np.sum(self.cat_sta_index))
+        cat_dynamics_length = int(np.sum(self.cat_dyn_index))
+        cat_statics_length = int(np.sum(self.cat_sta_index))
 
         static_records = []
         new_labels = []
@@ -557,9 +741,11 @@ class DataModel():
                                      constant_values=(0, 0))
                     dynamic_records.append(seq)
                     static_records.append(
-                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][start_index:static_len-label_num])
+                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][
+                        start_index:static_len - label_num])
                     new_labels.append(
-                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][static_len-label_num:])
+                        statics_group[user][min(len(statics_group[user]), i + self.seq_len) - 1][
+                        static_len - label_num:])
             dynamics = np.stack(dynamic_records, axis=0)
             statics = np.stack(static_records, axis=0)
             results['static_categorical_data'] = statics[:, :cat_statics_length]
@@ -600,7 +786,8 @@ class DataModel():
                      'num_sta_index': self.num_sta_index,
                      'latest_records': self.latest_records,
                      'label_value_dict': self.label_value_dict,
-                     'label_name_dict': self.label_name_dict},
+                     'label_name_dict': self.label_name_dict,
+                     'user_id_tokenizer': self.user_id_tokenizer},
                     open(dump_file + '.interp', "wb"))
         return results, dump_file + '.interp'
 
